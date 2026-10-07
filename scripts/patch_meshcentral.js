@@ -5,7 +5,11 @@ const root = path.resolve(process.argv[2] || '');
 if (!fs.existsSync(path.join(root, 'meshrelay.js')) || !fs.existsSync(path.join(root, 'agents', 'meshcore.js'))) throw new Error('Pass a MeshCentral checkout root');
 const workletSource = path.join(__dirname, '..', 'plugin', 'audio-worklet.js');
 const workletTarget = path.join(root, 'public', 'scripts', 'mcaudio-worklet.js');
-if (fs.existsSync(workletTarget) && !fs.readFileSync(workletTarget, 'utf8').equals(fs.readFileSync(workletSource, 'utf8'))) throw new Error('MeshCentral public/scripts/mcaudio-worklet.js already exists with different contents');
+if (fs.existsSync(workletTarget)) {
+    const installed = fs.readFileSync(workletTarget, 'utf8');
+    const expected = fs.readFileSync(workletSource, 'utf8');
+    if (installed !== expected && !installed.includes('registerProcessor("mc-audio-pcm"')) throw new Error('MeshCentral public/scripts/mcaudio-worklet.js already exists and does not look like the MeshCentral Audio worklet');
+}
 fs.copyFileSync(workletSource, workletTarget);
 function edit(relativePath, transform) {
     const file = path.join(root, relativePath);

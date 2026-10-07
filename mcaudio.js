@@ -20,7 +20,7 @@ module.exports.mcaudio = function (parent) {
         page.innerHTML = "<div style='padding:12px'><h3 id='mcaudioTitle'></h3>" +
             "<p>Audio is sent as 48 kHz, 16-bit stereo PCM (1.536 Mbps before transport overhead).</p>" +
             "<label for='mcaudioMode'>Source </label><select id='mcaudioMode'><option value='loopback'>System output (WASAPI loopback)</option><option value='microphone'>Microphone</option></select> " +
-            "<button id='mcaudioConnect'>Connect</button> <button id='mcaudioDisconnect' disabled>Disconnect</button> <button id='mcaudioStart' disabled>Start listening</button> <button id='mcaudioStop' disabled>Stop</button>" +
+            "<button id='mcaudioConnect'>Connect</button> <button id='mcaudioDisconnect' disabled>Disconnect</button> <button id='mcaudioStart' disabled>Start listening</button> <button id='mcaudioStop' disabled>Stop</button> <button id='mcaudioPopout' disabled>Open controls window</button>" +
             "<select id='mcaudioDevices' aria-label='Audio device' disabled style='min-width:280px'></select><p id='mcaudioStatus' role='status'>Not connected</p></div>";
 
         document.getElementById("mcaudioTitle").textContent = "Audio from " + name;
@@ -31,7 +31,35 @@ module.exports.mcaudio = function (parent) {
         var disconnect = document.getElementById("mcaudioDisconnect");
         var start = document.getElementById("mcaudioStart");
         var stop = document.getElementById("mcaudioStop");
-        function setStatus(s) { if (status) status.textContent = s; }
+        var popoutButton = document.getElementById("mcaudioPopout");
+        var popoutWindow = null;
+        var workletReady = false;
+        function syncPopout() {
+            if (!popoutWindow || popoutWindow.closed) { popoutWindow = null; return; }
+            try {
+                var w = popoutWindow;
+                var popMode = w.document.getElementById("mcaudioPopupMode");
+                if (!popMode) return;
+                popMode.value = mode.value;
+                popMode.disabled = mode.disabled;
+                var popDevices = w.document.getElementById("mcaudioPopupDevices");
+                popDevices.innerHTML = "";
+                for (var i = 0; i < devices.options.length; i++) {
+                    var option = w.document.createElement("option");
+                    option.value = devices.options[i].value;
+                    option.textContent = devices.options[i].textContent;
+                    popDevices.appendChild(option);
+                }
+                popDevices.value = devices.value;
+                popDevices.disabled = devices.disabled;
+                w.document.getElementById("mcaudioPopupConnect").disabled = connect.disabled;
+                w.document.getElementById("mcaudioPopupDisconnect").disabled = disconnect.disabled;
+                w.document.getElementById("mcaudioPopupStart").disabled = start.disabled || !workletReady;
+                w.document.getElementById("mcaudioPopupStop").disabled = stop.disabled;
+                w.document.getElementById("mcaudioPopupStatus").textContent = status ? status.textContent : "";
+            } catch (e) { popoutWindow = null; }
+        }
+        function setStatus(s) { if (status) status.textContent = s; syncPopout(); }
         function send(obj) {
             if (!window.mcaudioSession || !window.mcaudioSession.redirect || window.mcaudioSession.redirect.State < 3) return false;
             window.mcaudioSession.redirect.sendText(obj);
@@ -49,9 +77,29 @@ module.exports.mcaudio = function (parent) {
             if (send({ cmd: "enumerate", kind: mode.value }) === false) setStatus("Waiting for the authenticated agent tunnel…");
             else setStatus("Finding audio devices…");
         }
+        function openControlsWindow() {
+            if (popoutWindow && !popoutWindow.closed) { popoutWindow.focus(); return; }
+            var w = window.open("", "mcaudioControls", "popup=yes,width=460,height=320,resizable=yes");
+            if (!w) { setStatus("The browser blocked the controls window. Allow popups for this MeshCentral site."); return; }
+            popoutWindow = w;
+            w.document.open();
+            w.document.write("<!doctype html><html><head><meta charset='utf-8'><title>MeshCentral Audio</title></head><body><main><h2>Remote audio</h2><p>Controls stay available while you view the remote desktop.</p><label for='mcaudioPopupMode'>Source </label><select id='mcaudioPopupMode'><option value='loopback'>System output</option><option value='microphone'>Microphone</option></select><br><label for='mcaudioPopupDevices'>Device </label><select id='mcaudioPopupDevices' style='min-width:280px'></select><p><button id='mcaudioPopupConnect'>Connect</button> <button id='mcaudioPopupDisconnect'>Disconnect</button> <button id='mcaudioPopupStart'>Start listening</button> <button id='mcaudioPopupStop'>Stop</button></p><p id='mcaudioPopupStatus' role='status'></p></main></body></html>");
+            w.document.close();
+            var popMode = w.document.getElementById("mcaudioPopupMode");
+            var popDevices = w.document.getElementById("mcaudioPopupDevices");
+            w.document.getElementById("mcaudioPopupConnect").addEventListener("click", function () { connect.click(); });
+            w.document.getElementById("mcaudioPopupDisconnect").addEventListener("click", function () { disconnect.click(); });
+            w.document.getElementById("mcaudioPopupStart").addEventListener("click", function () { devices.value = popDevices.value; start.click(); });
+            w.document.getElementById("mcaudioPopupStop").addEventListener("click", function () { stop.click(); });
+            popMode.addEventListener("change", function () { mode.value = popMode.value; requestDevices(); });
+            popDevices.addEventListener("change", function () { devices.value = popDevices.value; syncPopout(); });
+            w.addEventListener("beforeunload", function () { if (popoutWindow === w) popoutWindow = null; });
+            startWorklet().then(function () { workletReady = true; syncPopout(); }, function (e) { setStatus("Browser audio playback could not start: " + e.message); });
+            syncPopout();
+        }
         function startWorklet() {
             var s = window.mcaudioSession;
-            if (s.context) return Promise.resolve();
+            if (s.context) return s.context.resume();
             var context = new AudioContext({ latencyHint: "interactive" });
             var workletUrl = domainUrl + "scripts/mcaudio-worklet.js";
             return context.audioWorklet.addModule(workletUrl).then(function () {
@@ -59,7 +107,10 @@ module.exports.mcaudio = function (parent) {
                 s.worklet = new AudioWorkletNode(context, "mc-audio-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
                 s.worklet.connect(context.destination);
                 return context.resume();
-            }, function (e) { context.close(); throw e; });
+            }, function (e) { context.close(); throw e; }).then(function () {
+                workletReady = true;
+                syncPopout();
+            });
         }
         window.mcaudioClose = function () {
             var s = window.mcaudioSession;
@@ -69,6 +120,9 @@ module.exports.mcaudio = function (parent) {
             try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
             try { if (s.context) s.context.close(); } catch (e) { }
             window.mcaudioSession = null;
+            workletReady = false;
+            if (popoutButton) popoutButton.disabled = true;
+            syncPopout();
         };
         window.mcaudioSend = send;
 
@@ -84,7 +138,9 @@ module.exports.mcaudio = function (parent) {
             if (window.mcaudioSession) window.mcaudioClose();
             var m = {
                 protocol: 15,
-                dataChannelOptions: { ordered: false, maxRetransmits: 0 },
+                // PCM must arrive in order. The browser's reliable DataChannel
+                // and MeshCentral's authenticated relay carry the same stream.
+                dataChannelOptions: { ordered: true },
                 ProcessData: function (data) {
                     var msg;
                     try { msg = JSON.parse(data); } catch (e) { return; }
@@ -110,8 +166,8 @@ module.exports.mcaudio = function (parent) {
                     s.worklet.port.postMessage(samples, [samples.buffer]);
                 },
                 xxStateChange: function (state) {
-                    if (state === 3) { setStatus("Authenticated tunnel connected; enumerating devices…"); requestDevices(); }
-                    else if (state === 0) { setStatus("Disconnected."); connect.disabled = false; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true; }
+                    if (state === 3) { popoutButton.disabled = false; setStatus("Authenticated tunnel connected; enumerating devices…"); requestDevices(); }
+                    else if (state === 0) { popoutButton.disabled = true; setStatus("Disconnected."); connect.disabled = false; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true; if (window.mcaudioSession && window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true }); }
                 }
             };
             var redirect = CreateAgentRedirect(meshserver, m, serverPublicNamePort, authCookie, authRelayCookie, domainUrl);
@@ -138,6 +194,7 @@ module.exports.mcaudio = function (parent) {
             if (window.mcaudioSession && window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true });
             setStatus("Capture stopped.");
         });
+        popoutButton.addEventListener("click", openControlsWindow);
     };
 
     obj.onDesktopDisconnect = function () {

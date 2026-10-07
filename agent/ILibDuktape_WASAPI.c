@@ -439,9 +439,20 @@ static WasapiCapture *Wasapi_GetCapture(duk_context *ctx, duk_idx_t index)
     return (WasapiCapture*)Duktape_GetPointerProperty(ctx, index, WASAPI_CAPTURE_PTR);
 }
 
+/* MeshAgent instance methods receive their object through JavaScript `this`,
+ * which must be pushed onto the Duktape stack explicitly. */
+static WasapiCapture *Wasapi_GetThisCapture(duk_context *ctx)
+{
+    WasapiCapture *capture;
+    duk_push_this(ctx);
+    capture = Wasapi_GetCapture(ctx, -1);
+    duk_pop(ctx);
+    return capture;
+}
+
 static duk_ret_t Wasapi_CaptureStart(duk_context *ctx)
 {
-    WasapiCapture *capture = Wasapi_GetCapture(ctx, -1);
+    WasapiCapture *capture = Wasapi_GetThisCapture(ctx);
     if (capture == NULL) return ILibDuktape_Error(ctx, "Audio capture is closed");
     if (capture->thread != NULL) { duk_push_true(ctx); return 1; }
     ResetEvent(capture->stopEvent);
@@ -455,7 +466,7 @@ static duk_ret_t Wasapi_CaptureStart(duk_context *ctx)
 
 static duk_ret_t Wasapi_CaptureStop(duk_context *ctx)
 {
-    WasapiCapture *capture = Wasapi_GetCapture(ctx, -1);
+    WasapiCapture *capture = Wasapi_GetThisCapture(ctx);
     if (capture == NULL) { duk_push_false(ctx); return 1; }
     SetEvent(capture->stopEvent);
     if (capture->thread != NULL)
@@ -471,7 +482,7 @@ static duk_ret_t Wasapi_CaptureStop(duk_context *ctx)
 
 static duk_ret_t Wasapi_CaptureState(duk_context *ctx)
 {
-    WasapiCapture *capture = Wasapi_GetCapture(ctx, -1);
+    WasapiCapture *capture = Wasapi_GetThisCapture(ctx);
     if (capture == NULL) duk_push_string(ctx, "error");
     else duk_push_string(ctx, Wasapi_StateString(InterlockedCompareExchange(&capture->state, 0, 0)));
     return 1;
@@ -479,7 +490,7 @@ static duk_ret_t Wasapi_CaptureState(duk_context *ctx)
 
 static duk_ret_t Wasapi_CaptureRead(duk_context *ctx)
 {
-    WasapiCapture *capture = Wasapi_GetCapture(ctx, -1);
+    WasapiCapture *capture = Wasapi_GetThisCapture(ctx);
     int maxFrames = duk_get_int_default(ctx, 0, 480);
     int frames, i;
     duk_size_t size;

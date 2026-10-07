@@ -8,6 +8,11 @@ function validKind(kind) {
     return kind === 'microphone' || kind === 'loopback';
 }
 
+function errorText(error) {
+    var message = (error && typeof error.message === 'string') ? error.message : String(error);
+    return message.substring(0, 256);
+}
+
 function stopCapture(ws) {
     var session = ws._mcaudio;
     if (session == null) return;
@@ -51,6 +56,7 @@ function handleTunnelData(ws, data) {
     }
 
     stopCapture(ws);
+    var session = null;
     try {
         var wasapi = require('wasapi');
         var available = wasapi.enumerate(message.kind);
@@ -58,7 +64,7 @@ function handleTunnelData(ws, data) {
         for (var i = 0; i < available.length; i++) { if (available[i].id === message.deviceId) { found = true; break; } }
         if (!found) { send(ws, { type: 'error', message: 'The selected audio device is unavailable.' }); return; }
 
-        var session = { capture: wasapi.createCapture(message.kind, message.deviceId), timer: null, lastState: null, blocked: false };
+        session = { capture: wasapi.createCapture(message.kind, message.deviceId), timer: null, lastState: null, blocked: false };
         ws._mcaudio = session;
         session.capture.start();
         session.timer = setInterval(function () {
@@ -86,7 +92,11 @@ function handleTunnelData(ws, data) {
             } catch (e) { session.blocked = true; }
         }, 10);
     } catch (e) {
-        send(ws, { type: 'error', message: 'Could not start WASAPI capture.' });
+        if (session != null && ws._mcaudio === session) {
+            stopCapture(ws);
+            try { delete ws._mcaudio; } catch (ignore) { ws._mcaudio = null; }
+        }
+        send(ws, { type: 'error', message: 'Could not start WASAPI capture: ' + errorText(e) });
     }
 }
 
