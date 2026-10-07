@@ -1,12 +1,12 @@
 # mic-central
 
-Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. The plugin adds an **Audio** tab with an optional separate controls window that stays available while the desktop view is open.
+Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. The plugin adds an **Audio** tab. Starting playback opens a small separate controls window so the audio engine can remain active while the main MeshCentral page switches to the desktop view.
 
 Audio is uncompressed signed 16-bit, 48 kHz, stereo PCM: 1.536 Mbps of payload before transport overhead. No audio codec or third-party audio library is used.
 
 ## Status
 
-The MeshAgent Windows x64 Debug and Release solutions build with the native binding included; x86 Debug and Release build with the installed v143 toolset. The capture methods now retrieve their native state from Duktape's JavaScript `this` object. The rebuilt Release binaries compile successfully. A live test reached device enumeration, but the previous capture attempt failed before WASAPI startup; end-to-end capture, loopback, playback, reconnection, and latency still need retesting. See [architecture](docs/architecture.md) for the verification boundary.
+The MeshAgent Windows x64 Release and x86 Release solutions build with the native binding included. The native microphone path now asks the Windows audio engine to convert unsupported endpoint formats to 48 kHz stereo PCM, with the existing native-format conversion as a fallback, and schedules capture under MMCSS. The user reports that system-output loopback is now smooth and that microphone devices enumerate and capture starts, but microphone playback remains choppy. These changes aim to improve it; the new microphone path has not yet been physically verified. Tunnel recovery retains playback and retries after transient connection loss. See [architecture](docs/architecture.md) for the verification boundary.
 
 ## Apply to source checkouts
 

@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <avrt.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propvarutil.h>
 #include <ksmedia.h>
@@ -18,6 +19,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "propsys.lib")
+#pragma comment(lib, "avrt.lib")
 
 #define WASAPI_CAPTURE_PTR "\xFF_wasapi_capture"
 #define WASAPI_RING_FRAMES 4800
@@ -321,11 +323,33 @@ static HRESULT Wasapi_CaptureOnce(WasapiCapture *capture, BOOL reconnected)
     desiredFormat.nAvgBytesPerSec = 192000;
     hr = IAudioClient_IsFormatSupported(audioClient, AUDCLNT_SHAREMODE_SHARED, &desiredFormat, &closestFormat);
     if (hr == S_OK) format = &desiredFormat;
-    else format = mixFormat;
+    else if (capture->loopback) format = mixFormat;
+    else
+    {
+        /* Let the Windows audio engine perform mic format conversion when
+         * the endpoint's native mix format is not 48 kHz stereo PCM. */
+        format = &desiredFormat;
+        flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    }
     if (closestFormat) { CoTaskMemFree(closestFormat); closestFormat = NULL; }
 
     if (capture->loopback) flags = AUDCLNT_STREAMFLAGS_LOOPBACK;
     hr = IAudioClient_Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, flags, 0, 0, (WAVEFORMATEX*)format, NULL);
+    if (FAILED(hr) && !capture->loopback && format == &desiredFormat)
+    {
+        /* A few drivers reject the engine resampler flags. Keep microphone
+         * capture available through the native mix format as a fallback. */
+        if (audioEvent) { CloseHandle(audioEvent); audioEvent = NULL; }
+        IAudioClient_Release(audioClient);
+        audioClient = NULL;
+        hr = IMMDevice_Activate(device, &MCAUDIO_IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&audioClient);
+        if (SUCCEEDED(hr))
+        {
+            format = mixFormat;
+            flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+            hr = IAudioClient_Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, flags, 0, 0, (WAVEFORMATEX*)format, NULL);
+        }
+    }
     if (FAILED(hr)) goto cleanup;
     if (!capture->loopback)
     {
@@ -415,6 +439,9 @@ static DWORD WINAPI Wasapi_CaptureThread(LPVOID arg)
 {
     WasapiCapture *capture = (WasapiCapture*)arg;
     BOOL reconnected = FALSE;
+    DWORD taskIndex = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+    if (mmcss == NULL) mmcss = AvSetMmThreadCharacteristicsW(L"Audio", &taskIndex);
     for (;;)
     {
         HRESULT hr = Wasapi_CaptureOnce(capture, reconnected);
@@ -430,6 +457,7 @@ static DWORD WINAPI Wasapi_CaptureThread(LPVOID arg)
         Wasapi_SetState(capture, WASAPI_STATE_ERROR);
         break;
     }
+    if (mmcss != NULL) AvRevertMmThreadCharacteristics(mmcss);
     if (WaitForSingleObject(capture->stopEvent, 0) == WAIT_OBJECT_0) Wasapi_SetState(capture, WASAPI_STATE_STOPPED);
     return 0;
 }

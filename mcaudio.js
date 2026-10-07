@@ -20,7 +20,7 @@ module.exports.mcaudio = function (parent) {
         page.innerHTML = "<div style='padding:12px'><h3 id='mcaudioTitle'></h3>" +
             "<p>Audio is sent as 48 kHz, 16-bit stereo PCM (1.536 Mbps before transport overhead).</p>" +
             "<label for='mcaudioMode'>Source </label><select id='mcaudioMode'><option value='loopback'>System output (WASAPI loopback)</option><option value='microphone'>Microphone</option></select> " +
-            "<button id='mcaudioConnect'>Connect</button> <button id='mcaudioDisconnect' disabled>Disconnect</button> <button id='mcaudioStart' disabled>Start listening</button> <button id='mcaudioStop' disabled>Stop</button> <button id='mcaudioPopout' disabled>Open controls window</button>" +
+            "<button id='mcaudioConnect'>Connect</button> <button id='mcaudioDisconnect' disabled>Disconnect</button> <button id='mcaudioStart' disabled>Start listening</button> <button id='mcaudioStop' disabled>Stop</button> <button id='mcaudioPopout' disabled>Open audio controls</button>" +
             "<select id='mcaudioDevices' aria-label='Audio device' disabled style='min-width:280px'></select><p id='mcaudioStatus' role='status'>Not connected</p></div>";
 
         document.getElementById("mcaudioTitle").textContent = "Audio from " + name;
@@ -34,6 +34,12 @@ module.exports.mcaudio = function (parent) {
         var popoutButton = document.getElementById("mcaudioPopout");
         var popoutWindow = null;
         var workletReady = false;
+        var shouldListen = false;
+        var selectedDeviceId = null;
+        var retryCount = 0;
+        var retryTimer = null;
+        var reconnecting = false;
+        var popupBlockedPlayback = false;
         function syncPopout() {
             if (!popoutWindow || popoutWindow.closed) { popoutWindow = null; return; }
             try {
@@ -78,9 +84,10 @@ module.exports.mcaudio = function (parent) {
             else setStatus("Finding audio devices…");
         }
         function openControlsWindow() {
-            if (popoutWindow && !popoutWindow.closed) { popoutWindow.focus(); return; }
+            if (popoutWindow && !popoutWindow.closed) { popoutWindow.focus(); return popoutWindow; }
             var w = window.open("", "mcaudioControls", "popup=yes,width=460,height=320,resizable=yes");
-            if (!w) { setStatus("The browser blocked the controls window. Allow popups for this MeshCentral site."); return; }
+            if (!w) { popupBlockedPlayback = true; setStatus("The browser blocked the controls window. Allow popups for this MeshCentral site."); return null; }
+            popupBlockedPlayback = false;
             popoutWindow = w;
             w.document.open();
             w.document.write("<!doctype html><html><head><meta charset='utf-8'><title>MeshCentral Audio</title></head><body><main><h2>Remote audio</h2><p>Controls stay available while you view the remote desktop.</p><label for='mcaudioPopupMode'>Source </label><select id='mcaudioPopupMode'><option value='loopback'>System output</option><option value='microphone'>Microphone</option></select><br><label for='mcaudioPopupDevices'>Device </label><select id='mcaudioPopupDevices' style='min-width:280px'></select><p><button id='mcaudioPopupConnect'>Connect</button> <button id='mcaudioPopupDisconnect'>Disconnect</button> <button id='mcaudioPopupStart'>Start listening</button> <button id='mcaudioPopupStop'>Stop</button></p><p id='mcaudioPopupStatus' role='status'></p></main></body></html>");
@@ -91,16 +98,32 @@ module.exports.mcaudio = function (parent) {
             w.document.getElementById("mcaudioPopupDisconnect").addEventListener("click", function () { disconnect.click(); });
             w.document.getElementById("mcaudioPopupStart").addEventListener("click", function () { devices.value = popDevices.value; start.click(); });
             w.document.getElementById("mcaudioPopupStop").addEventListener("click", function () { stop.click(); });
-            popMode.addEventListener("change", function () { mode.value = popMode.value; requestDevices(); });
+            popMode.addEventListener("change", function () { shouldListen = false; selectedDeviceId = null; mode.value = popMode.value; requestDevices(); });
             popDevices.addEventListener("change", function () { devices.value = popDevices.value; syncPopout(); });
-            w.addEventListener("beforeunload", function () { if (popoutWindow === w) popoutWindow = null; });
+            w.addEventListener("beforeunload", function () {
+                if (window.mcaudioSession && window.mcaudioSession.audioWindow === w) {
+                    shouldListen = false;
+                    send({ cmd: "stop" });
+                    try { if (window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true }); } catch (e) { }
+                    window.mcaudioSession.context = null;
+                    window.mcaudioSession.worklet = null;
+                    window.mcaudioSession.audioWindow = null;
+                    workletReady = false;
+                    stop.disabled = true;
+                    start.disabled = !devices.value;
+                    setStatus("Audio stopped because the controls window was closed.");
+                }
+                if (popoutWindow === w) popoutWindow = null;
+            });
             startWorklet(w).then(function () { workletReady = true; syncPopout(); }, function (e) { setStatus("Browser audio playback could not start: " + e.message); });
             syncPopout();
+            return w;
         }
         function startWorklet(targetWindow) {
             var s = window.mcaudioSession;
             if (!s) return Promise.reject(new Error("Audio tunnel is not connected."));
             var audioWindow = targetWindow || ((popoutWindow && !popoutWindow.closed) ? popoutWindow : window);
+            if (s.workletPromise && s.audioWindow === audioWindow) return s.workletPromise;
             if (s.context && s.audioWindow === audioWindow) return s.context.resume();
             if (s.context) {
                 try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
@@ -114,29 +137,67 @@ module.exports.mcaudio = function (parent) {
             if (!AudioContextType || !WorkletNodeType) return Promise.reject(new Error("This browser does not support AudioWorklet playback."));
             var context = new AudioContextType({ latencyHint: "interactive" });
             var workletUrl = domainUrl + "scripts/mcaudio-worklet.js";
-            return context.audioWorklet.addModule(workletUrl).then(function () {
-                s.context = context;
-                s.audioWindow = audioWindow;
-                s.worklet = new WorkletNodeType(context, "mc-audio-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
-                s.worklet.connect(context.destination);
-                return context.resume();
-            }, function (e) { context.close(); throw e; }).then(function () {
+            /* Request resume synchronously from the user gesture, before the
+             * worklet script fetch yields control and the browser may expire it. */
+            var resumePromise = context.resume();
+            s.context = context;
+            s.audioWindow = audioWindow;
+            var worklet = null;
+            var setup = context.audioWorklet.addModule(workletUrl).then(function () {
+                if (window.mcaudioSession !== s || s.context !== context || s.audioWindow !== audioWindow) throw new Error("Audio tunnel changed while starting playback.");
+                worklet = new WorkletNodeType(context, "mc-audio-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+                s.worklet = worklet;
+                worklet.connect(context.destination);
+                return Promise.all([resumePromise, context.resume()]);
+            }).then(function () {
                 workletReady = true;
                 syncPopout();
+            }).catch(function (e) {
+                try { if (worklet) worklet.disconnect(); } catch (ignore) { }
+                if (s.context === context) {
+                    s.context = null;
+                    s.worklet = null;
+                    s.audioWindow = null;
+                    s.workletPromise = null;
+                }
+                try { context.close(); } catch (ignore2) { }
+                throw e;
             });
+            s.workletPromise = setup;
+            setup.then(function () { if (s.workletPromise === setup) s.workletPromise = null; }, function () { });
+            return setup;
         }
-        window.mcaudioClose = function () {
+        function closeSession(preservePlayback) {
             var s = window.mcaudioSession;
-            if (!s) return;
+            if (!s) {
+                if (!preservePlayback && window.mcaudioPlaybackCache) {
+                    try { if (window.mcaudioPlaybackCache.worklet) window.mcaudioPlaybackCache.worklet.disconnect(); } catch (e) { }
+                    try { if (window.mcaudioPlaybackCache.context) window.mcaudioPlaybackCache.context.close(); } catch (e) { }
+                    window.mcaudioPlaybackCache = null;
+                }
+                return;
+            }
+            s.closing = true;
             try { if (s.redirect && s.redirect.State >= 3) s.redirect.sendText({ cmd: "stop" }); } catch (e) { }
             try { if (s.redirect) s.redirect.Stop(); } catch (e) { }
-            try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
-            try { if (s.context) s.context.close(); } catch (e) { }
+            try { if (s.worklet) s.worklet.port.postMessage({ reset: true }); } catch (e) { }
+            if (preservePlayback && s.context && s.worklet) {
+                window.mcaudioPlaybackCache = { context: s.context, worklet: s.worklet, audioWindow: s.audioWindow };
+            } else {
+                try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
+                try { if (s.context) s.context.close(); } catch (e) { }
+                window.mcaudioPlaybackCache = null;
+            }
             s.audioWindow = null;
             window.mcaudioSession = null;
-            workletReady = false;
+            workletReady = !!window.mcaudioPlaybackCache;
             if (popoutButton) popoutButton.disabled = true;
             syncPopout();
+        }
+        window.mcaudioClose = function () {
+            shouldListen = false;
+            if (retryTimer != null) { clearTimeout(retryTimer); retryTimer = null; }
+            closeSession(false);
         };
         window.mcaudioSend = send;
 
@@ -149,7 +210,10 @@ module.exports.mcaudio = function (parent) {
         }
         connect.addEventListener("click", function () {
             if (typeof CreateAgentRedirect !== "function" || typeof meshserver === "undefined") { setStatus("MeshCentral agent relay support is unavailable."); return; }
-            if (window.mcaudioSession) window.mcaudioClose();
+            var keepPlayback = reconnecting || shouldListen;
+            if (window.mcaudioSession) closeSession(keepPlayback);
+            var retainedPlayback = keepPlayback ? window.mcaudioPlaybackCache : null;
+            if (retainedPlayback) window.mcaudioPlaybackCache = null;
             var m = {
                 protocol: 15,
                 // PCM must arrive in order. The browser's reliable DataChannel
@@ -163,12 +227,25 @@ module.exports.mcaudio = function (parent) {
                         (msg.devices || []).forEach(function (d) {
                             var o = document.createElement("option"); o.value = d.id; o.textContent = d.name; devices.appendChild(o);
                         });
+                        if (selectedDeviceId) devices.value = selectedDeviceId;
                         devices.disabled = false; start.disabled = devices.options.length === 0;
-                        setStatus(devices.options.length ? "Select a device, then start listening." : "No active audio devices found.");
+                        if (shouldListen && selectedDeviceId && devices.value !== selectedDeviceId) {
+                            shouldListen = false;
+                            setStatus("The selected audio device is unavailable. Choose a device and start listening again.");
+                        } else if (shouldListen && devices.options.length) {
+                            setStatus("Reconnected; resuming audio…");
+                            start.click();
+                        } else {
+                            setStatus(devices.options.length ? "Select a device, then start listening." : "No active audio devices found.");
+                        }
                     } else if (msg.type === "state") {
                         setStatus(msg.message || msg.state || "Audio status changed.");
                         if (msg.state === "device-lost") { start.disabled = true; }
+                        else if (msg.state === "running" && popupBlockedPlayback) setStatus("Audio is playing in this tab. Allow popups so it can stay active while you view the desktop.");
                     } else if (msg.type === "error") {
+                        shouldListen = false;
+                        start.disabled = !devices.value;
+                        stop.disabled = true;
                         setStatus("Audio error: " + (msg.message || "Unknown error"));
                     }
                 },
@@ -180,12 +257,42 @@ module.exports.mcaudio = function (parent) {
                     s.worklet.port.postMessage(samples, [samples.buffer]);
                 },
                 xxStateChange: function (state) {
-                    if (state === 3) { popoutButton.disabled = false; setStatus("Authenticated tunnel connected; enumerating devices…"); requestDevices(); }
-                    else if (state === 0) { popoutButton.disabled = true; setStatus("Disconnected."); connect.disabled = false; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true; if (window.mcaudioSession && window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true }); }
+                    if (state === 3) { retryCount = 0; popoutButton.disabled = false; setStatus("Authenticated tunnel connected; enumerating devices…"); requestDevices(); }
+                    else if (state === 0) {
+                        var lostSession = window.mcaudioSession;
+                        if (!lostSession || lostSession.closing) return;
+                        setStatus("Audio tunnel interrupted; reconnecting…");
+                        connect.disabled = true; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true;
+                        try { if (lostSession.worklet) lostSession.worklet.port.postMessage({ reset: true }); } catch (e) { }
+                        if (retryTimer == null) {
+                            if (retryCount >= 8) {
+                                connect.disabled = false;
+                                setStatus("Audio tunnel could not reconnect. Press Connect to try again.");
+                            } else {
+                                var delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+                                retryCount++;
+                                retryTimer = setTimeout(function () {
+                                    retryTimer = null;
+                                    if (window.mcaudioSession !== lostSession || lostSession.closing) return;
+                                    reconnecting = true;
+                                    connect.disabled = false;
+                                    connect.click();
+                                    reconnecting = false;
+                                }, delay);
+                            }
+                        }
+                    }
                 }
             };
             var redirect = CreateAgentRedirect(meshserver, m, serverPublicNamePort, authCookie, authRelayCookie, domainUrl);
-            window.mcaudioSession = { nodeId: nodeid, redirect: redirect, module: m, context: null, worklet: null };
+            window.mcaudioSession = {
+                nodeId: nodeid, redirect: redirect, module: m,
+                context: retainedPlayback ? retainedPlayback.context : null,
+                worklet: retainedPlayback ? retainedPlayback.worklet : null,
+                audioWindow: retainedPlayback ? retainedPlayback.audioWindow : null,
+                workletPromise: null,
+                closing: false
+            };
             redirect.Start(nodeid);
             connect.disabled = true; disconnect.disabled = false; stop.disabled = true;
             setStatus("Connecting through MeshCentral…");
@@ -195,17 +302,27 @@ module.exports.mcaudio = function (parent) {
             connect.disabled = false; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true;
             setStatus("Disconnected.");
         });
-        mode.addEventListener("change", requestDevices);
+        mode.addEventListener("change", function () { shouldListen = false; selectedDeviceId = null; requestDevices(); });
         start.addEventListener("click", function () {
             if (!devices.value) return;
-            startWorklet().then(function () {
+            /* Put the playback engine in a small window that remains alive
+             * when the main MeshCentral page switches to desktop view. */
+            var audioWindow = openControlsWindow();
+            var popupBlocked = !audioWindow;
+            if (!audioWindow) audioWindow = window;
+            startWorklet(audioWindow).then(function () {
                 if (send({ cmd: "start", kind: mode.value, deviceId: devices.value }) === false) { setStatus("Audio tunnel is not connected."); return; }
-                start.disabled = true; stop.disabled = false; setStatus("Starting capture…");
+                selectedDeviceId = devices.value;
+                shouldListen = true;
+                popupBlockedPlayback = popupBlocked;
+                start.disabled = true; stop.disabled = false;
+                setStatus(popupBlocked ? "Starting capture in this tab. Allow popups to keep audio active while viewing the desktop." : "Starting capture…");
             }).catch(function (e) { setStatus("Browser audio playback could not start: " + e.message); });
         });
         stop.addEventListener("click", function () {
+            shouldListen = false;
             send({ cmd: "stop" }); start.disabled = !devices.value; stop.disabled = true;
-            if (window.mcaudioSession && window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true });
+            try { if (window.mcaudioSession && window.mcaudioSession.worklet) window.mcaudioSession.worklet.port.postMessage({ reset: true }); } catch (e) { }
             setStatus("Capture stopped.");
         });
         popoutButton.addEventListener("click", openControlsWindow);
