@@ -2,7 +2,7 @@
 
 module.exports.mcaudio = function (parent) {
     var obj = { parent: parent };
-    obj.exports = ["onDeviceRefreshEnd", "onDesktopDisconnect"];
+    obj.exports = ["onDeviceRefreshEnd"];
 
     obj.onDeviceRefreshEnd = function (nodeid) {
         if (typeof pluginHandler === "undefined" || !pluginHandler.registerPluginTab) return;
@@ -94,17 +94,30 @@ module.exports.mcaudio = function (parent) {
             popMode.addEventListener("change", function () { mode.value = popMode.value; requestDevices(); });
             popDevices.addEventListener("change", function () { devices.value = popDevices.value; syncPopout(); });
             w.addEventListener("beforeunload", function () { if (popoutWindow === w) popoutWindow = null; });
-            startWorklet().then(function () { workletReady = true; syncPopout(); }, function (e) { setStatus("Browser audio playback could not start: " + e.message); });
+            startWorklet(w).then(function () { workletReady = true; syncPopout(); }, function (e) { setStatus("Browser audio playback could not start: " + e.message); });
             syncPopout();
         }
-        function startWorklet() {
+        function startWorklet(targetWindow) {
             var s = window.mcaudioSession;
-            if (s.context) return s.context.resume();
-            var context = new AudioContext({ latencyHint: "interactive" });
+            if (!s) return Promise.reject(new Error("Audio tunnel is not connected."));
+            var audioWindow = targetWindow || ((popoutWindow && !popoutWindow.closed) ? popoutWindow : window);
+            if (s.context && s.audioWindow === audioWindow) return s.context.resume();
+            if (s.context) {
+                try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
+                try { s.context.close(); } catch (e) { }
+                s.context = null;
+                s.worklet = null;
+                s.audioWindow = null;
+            }
+            var AudioContextType = audioWindow.AudioContext || audioWindow.webkitAudioContext;
+            var WorkletNodeType = audioWindow.AudioWorkletNode;
+            if (!AudioContextType || !WorkletNodeType) return Promise.reject(new Error("This browser does not support AudioWorklet playback."));
+            var context = new AudioContextType({ latencyHint: "interactive" });
             var workletUrl = domainUrl + "scripts/mcaudio-worklet.js";
             return context.audioWorklet.addModule(workletUrl).then(function () {
                 s.context = context;
-                s.worklet = new AudioWorkletNode(context, "mc-audio-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+                s.audioWindow = audioWindow;
+                s.worklet = new WorkletNodeType(context, "mc-audio-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
                 s.worklet.connect(context.destination);
                 return context.resume();
             }, function (e) { context.close(); throw e; }).then(function () {
@@ -119,6 +132,7 @@ module.exports.mcaudio = function (parent) {
             try { if (s.redirect) s.redirect.Stop(); } catch (e) { }
             try { if (s.worklet) s.worklet.disconnect(); } catch (e) { }
             try { if (s.context) s.context.close(); } catch (e) { }
+            s.audioWindow = null;
             window.mcaudioSession = null;
             workletReady = false;
             if (popoutButton) popoutButton.disabled = true;
@@ -197,9 +211,6 @@ module.exports.mcaudio = function (parent) {
         popoutButton.addEventListener("click", openControlsWindow);
     };
 
-    obj.onDesktopDisconnect = function () {
-        if (window.mcaudioClose) window.mcaudioClose();
-    };
     return obj;
 };
 
