@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Move controls to Speakers and Microphone buttons in MeshCentral PC Control/ViewMode.
+- Open device/source selection and Start/Stop controls in MeshCentral's standard modal.
+- Remove the separate Audio tab and popup controls window.
+- Patch both default and default3 ViewMode templates with explicit, version-sensitive anchors.
+
 ## 0.1.0
 
 - Add a MeshCentral Audio device tab for microphone and system-output listening.

@@ -1,6 +1,6 @@
 # mic-central
 
-Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. The plugin adds an **Audio** tab. Starting playback opens a small separate controls window so the audio engine can remain active while the main MeshCentral page switches to the desktop view.
+Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. While viewing a Windows PC, the desktop toolbar has **Speakers** and **Microphone** buttons. Each opens a MeshCentral dialog with source and device selection plus Start/Stop controls. Playback stays in the desktop page, so the remote screen and audio can be used together.
 
 Audio is uncompressed signed 16-bit, 48 kHz, stereo PCM: 1.536 Mbps of payload before transport overhead. No audio codec or third-party audio library is used.
 
@@ -10,14 +10,14 @@ The MeshAgent Windows x64 Release and x86 Release solutions build with the nativ
 
 ## Apply to source checkouts
 
-Use clean, disposable MeshCentral and MeshAgent checkouts. The patch scripts edit those checkouts in place.
+Use clean, disposable MeshCentral and MeshAgent checkouts. The patch scripts edit those checkouts in place. The MeshCentral patch updates the existing relay scripts and both ViewMode templates (`default.handlebars` and `default3.handlebars`) because MeshCentral does not expose a supported plugin hook for the desktop toolbar. It uses explicit template anchors; if those anchors change in a later MeshCentral release, the patch stops with an error and must be adapted. Reapply it after replacing/updating the MeshCentral package.
 
 ```powershell
 node .\scripts\patch_meshcentral.js C:\path\to\MeshCentral
 node .\scripts\patch_meshagent.js C:\path\to\MeshAgent
 ```
 
-Run `patch_meshcentral.js` after placing this repository on the build host; it also copies the worklet processor into MeshCentral's same-origin `public/scripts/` directory, which is needed because the default Content Security Policy blocks Blob-loaded scripts. Build and deploy the updated Windows MeshAgent from `MeshAgent-2022.sln` for x64. In MeshCentral's server Plugins page, add the plugin using `https://raw.githubusercontent.com/og-debug447/mic-central/main/config.json`, then install it. The GitHub archive has `config.json`, `mcaudio.js`, and `modules_meshcore/` at its root so MeshCentral can load them. The MeshCentral and MeshAgent source revisions used during development are pinned in [architecture](docs/architecture.md).
+Run `patch_meshcentral.js` after placing this repository on the build host; it also copies the AudioWorklet and ViewMode controller into MeshCentral's same-origin `public/scripts/` directory. Build and deploy the updated Windows MeshAgent from `MeshAgent-2022.sln` for x64. In MeshCentral's server Plugins page, add the plugin using `https://raw.githubusercontent.com/og-debug447/mic-central/main/config.json`, then install it. The GitHub archive has `config.json`, `mcaudio.js`, and `modules_meshcore/` at its root so MeshCentral can load them. The MeshCentral and MeshAgent source revisions used during development are pinned in [architecture](docs/architecture.md).
 
 Do not deploy to production before testing with a disposable MeshCentral instance and Windows test device. A repository revision mismatch may require adapting the patches, especially the reserved relay protocol number.
 
