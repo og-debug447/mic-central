@@ -5,14 +5,14 @@
   "author": "MeshCentral Audio contributors",
   "description": "Listen to Windows microphone or system output using WASAPI.",
   "hasAdminPanel": false,
-  "homepage": "https://github.com/og-debug447/MeshCentral-Audio",
-  "changelogUrl": "https://raw.githubusercontent.com/og-debug447/MeshCentral-Audio/main/CHANGELOG.md",
-  "configUrl": "https://raw.githubusercontent.com/og-debug447/MeshCentral-Audio/main/plugin/config.json",
-  "downloadUrl": "https://github.com/og-debug447/MeshCentral-Audio/archive/refs/heads/main.zip",
+  "homepage": "https://github.com/og-debug447/mic-central",
+  "changelogUrl": "https://raw.githubusercontent.com/og-debug447/mic-central/main/CHANGELOG.md",
+  "configUrl": "https://raw.githubusercontent.com/og-debug447/mic-central/main/plugin/config.json",
+  "downloadUrl": "https://github.com/og-debug447/mic-central/archive/refs/heads/main.zip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/og-debug447/MeshCentral-Audio.git"
+    "url": "https://github.com/og-debug447/mic-central.git"
   },
-  "versionHistoryUrl": "https://api.github.com/repos/og-debug447/MeshCentral-Audio/tags",
+  "versionHistoryUrl": "https://api.github.com/repos/og-debug447/mic-central/tags",
   "meshCentralCompat": ">=1.1.0"
 }

@@ -1,4 +1,6 @@
-# MeshCentral Audio
+# mic-central
+
+Microphone and system audio listening for MeshCentral, implemented as a plugin with native Windows WASAPI capture.
 
 Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. The plugin UI is a device **Audio** tab, exposed through MeshCentral's plugin API.
 
@@ -30,3 +32,5 @@ On a Visual Studio installation with the C++ and Windows SDK workloads:
 ```
 
 The binding uses only Windows SDK Core Audio/COM APIs and existing MeshAgent/Duktape dependencies.
+
+
