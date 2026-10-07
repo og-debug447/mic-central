@@ -7,7 +7,7 @@
   "hasAdminPanel": false,
   "homepage": "https://github.com/og-debug447/mic-central",
   "changelogUrl": "https://raw.githubusercontent.com/og-debug447/mic-central/main/CHANGELOG.md",
-  "configUrl": "https://raw.githubusercontent.com/og-debug447/mic-central/main/plugin/config.json",
+  "configUrl": "https://raw.githubusercontent.com/og-debug447/mic-central/main/config.json",
   "downloadUrl": "https://github.com/og-debug447/mic-central/archive/refs/heads/main.zip",
   "repository": {
     "type": "git",
