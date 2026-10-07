@@ -90,7 +90,7 @@ module.exports.mcaudio = function (parent) {
             popupBlockedPlayback = false;
             popoutWindow = w;
             w.document.open();
-            w.document.write("<!doctype html><html><head><meta charset='utf-8'><title>MeshCentral Audio</title></head><body><main><h2>Remote audio</h2><p>Controls stay available while you view the remote desktop.</p><label for='mcaudioPopupMode'>Source </label><select id='mcaudioPopupMode'><option value='loopback'>System output</option><option value='microphone'>Microphone</option></select><br><label for='mcaudioPopupDevices'>Device </label><select id='mcaudioPopupDevices' style='min-width:280px'></select><p><button id='mcaudioPopupConnect'>Connect</button> <button id='mcaudioPopupDisconnect'>Disconnect</button> <button id='mcaudioPopupStart'>Start listening</button> <button id='mcaudioPopupStop'>Stop</button></p><p id='mcaudioPopupStatus' role='status'></p></main></body></html>");
+            w.document.write("<!doctype html><html><head><meta charset='utf-8'><title>MeshCentral Audio</title></head><body><main><h2>Remote audio</h2><p>Leave this window open while you view the remote desktop. Closing it stops audio.</p><label for='mcaudioPopupMode'>Source </label><select id='mcaudioPopupMode'><option value='loopback'>System output</option><option value='microphone'>Microphone</option></select><br><label for='mcaudioPopupDevices'>Device </label><select id='mcaudioPopupDevices' style='min-width:280px'></select><p><button id='mcaudioPopupConnect'>Connect</button> <button id='mcaudioPopupDisconnect'>Disconnect</button> <button id='mcaudioPopupStart'>Start listening</button> <button id='mcaudioPopupStop'>Stop</button></p><p id='mcaudioPopupStatus' role='status'></p></main></body></html>");
             w.document.close();
             var popMode = w.document.getElementById("mcaudioPopupMode");
             var popDevices = w.document.getElementById("mcaudioPopupDevices");
@@ -214,12 +214,14 @@ module.exports.mcaudio = function (parent) {
             if (window.mcaudioSession) closeSession(keepPlayback);
             var retainedPlayback = keepPlayback ? window.mcaudioPlaybackCache : null;
             if (retainedPlayback) window.mcaudioPlaybackCache = null;
+            var session = null;
             var m = {
                 protocol: 15,
                 // PCM must arrive in order. The browser's reliable DataChannel
                 // and MeshCentral's authenticated relay carry the same stream.
                 dataChannelOptions: { ordered: true },
                 ProcessData: function (data) {
+                    if (!session || window.mcaudioSession !== session) return;
                     var msg;
                     try { msg = JSON.parse(data); } catch (e) { return; }
                     if (msg.type === "devices") {
@@ -250,17 +252,19 @@ module.exports.mcaudio = function (parent) {
                     }
                 },
                 ProcessBinaryData: function (bytes) {
-                    var s = window.mcaudioSession;
+                    if (!session || window.mcaudioSession !== session) return;
+                    var s = session;
                     if (!s || !s.worklet || !bytes || bytes.byteLength < 4) return;
                     var n = bytes.byteLength & ~1, view = new DataView(bytes.buffer, bytes.byteOffset, n), samples = new Float32Array(n / 2);
                     for (var i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
                     s.worklet.port.postMessage(samples, [samples.buffer]);
                 },
                 xxStateChange: function (state) {
+                    if (!session || window.mcaudioSession !== session) return;
                     if (state === 3) { retryCount = 0; popoutButton.disabled = false; setStatus("Authenticated tunnel connected; enumerating devices…"); requestDevices(); }
                     else if (state === 0) {
-                        var lostSession = window.mcaudioSession;
-                        if (!lostSession || lostSession.closing) return;
+                        var lostSession = session;
+                        if (lostSession.closing) return;
                         setStatus("Audio tunnel interrupted; reconnecting…");
                         connect.disabled = true; disconnect.disabled = true; start.disabled = true; stop.disabled = true; devices.disabled = true;
                         try { if (lostSession.worklet) lostSession.worklet.port.postMessage({ reset: true }); } catch (e) { }
@@ -285,7 +289,7 @@ module.exports.mcaudio = function (parent) {
                 }
             };
             var redirect = CreateAgentRedirect(meshserver, m, serverPublicNamePort, authCookie, authRelayCookie, domainUrl);
-            window.mcaudioSession = {
+            session = {
                 nodeId: nodeid, redirect: redirect, module: m,
                 context: retainedPlayback ? retainedPlayback.context : null,
                 worklet: retainedPlayback ? retainedPlayback.worklet : null,
@@ -293,6 +297,7 @@ module.exports.mcaudio = function (parent) {
                 workletPromise: null,
                 closing: false
             };
+            window.mcaudioSession = session;
             redirect.Start(nodeid);
             connect.disabled = true; disconnect.disabled = false; stop.disabled = true;
             setStatus("Connecting through MeshCentral…");
