@@ -1,0 +1,7 @@
+.vs/
+build/
+Debug/
+Release/
+node_modules/
+*.user
+*.suo
