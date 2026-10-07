@@ -1,7 +1,7 @@
 {
   "name": "MeshCentral Audio",
   "shortName": "mcaudio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "MeshCentral Audio contributors",
   "description": "Listen to Windows microphone or system output using WASAPI.",
   "hasAdminPanel": false,

@@ -16,7 +16,8 @@ fs.copyFileSync(workletSource, workletTarget);
 if (fs.existsSync(viewModeTarget)) {
     const installed = fs.readFileSync(viewModeTarget, 'utf8');
     const expected = fs.readFileSync(viewModeSource, 'utf8');
-    if (installed !== expected) throw new Error('MeshCentral public/scripts/mcaudio-viewmode.js already exists with different contents');
+    const isMeshCentralAudioController = installed.includes('root.mcaudioViewMode = { open: open, desktopDisconnected: shutdown };');
+    if (installed !== expected && !isMeshCentralAudioController) throw new Error('MeshCentral public/scripts/mcaudio-viewmode.js already exists with different contents');
 }
 fs.copyFileSync(viewModeSource, viewModeTarget);
 function edit(relativePath, transform) {

@@ -8,6 +8,14 @@ function validKind(kind) {
     return kind === 'microphone' || kind === 'loopback';
 }
 
+function validSampleRate(sampleRate) {
+    return typeof sampleRate === 'number' && sampleRate === Math.floor(sampleRate) && [8000, 16000, 24000, 32000, 44100, 48000].indexOf(sampleRate) >= 0;
+}
+
+function validChannels(channels) {
+    return channels === 1 || channels === 2;
+}
+
 function errorText(error) {
     var message = (error && typeof error.message === 'string') ? error.message : String(error);
     return message.substring(0, 256);
@@ -36,11 +44,11 @@ function handleTunnelData(ws, data) {
     if (message == null || typeof message.cmd !== 'string') return;
 
     if (message.cmd === 'enumerate') {
-        if (!validKind(message.kind)) { send(ws, { type: 'error', message: 'Invalid audio source.' }); return; }
+        if (!validKind(message.kind)) { send(ws, { type: 'error', operation: 'enumerate', message: 'Invalid audio source.' }); return; }
         try {
             var devices = require('wasapi').enumerate(message.kind);
             send(ws, { type: 'devices', kind: message.kind, devices: devices });
-        } catch (e) { send(ws, { type: 'error', message: 'Could not enumerate audio devices.' }); }
+        } catch (e) { send(ws, { type: 'error', operation: 'enumerate', message: 'Could not enumerate audio devices.' }); }
         return;
     }
 
@@ -51,7 +59,15 @@ function handleTunnelData(ws, data) {
     }
 
     if (message.cmd !== 'start' || !validKind(message.kind) || typeof message.deviceId !== 'string' || message.deviceId.length < 1 || message.deviceId.length > 1024) {
-        send(ws, { type: 'error', message: 'Invalid audio command.' });
+        send(ws, { type: 'error', operation: 'command', message: 'Invalid audio command.' });
+        return;
+    }
+
+    // Keep older browser clients working at the original full-quality format.
+    var sampleRate = (message.sampleRate === undefined) ? 48000 : message.sampleRate;
+    var channels = (message.channels === undefined) ? 2 : message.channels;
+    if (!validSampleRate(sampleRate) || !validChannels(channels)) {
+        send(ws, { type: 'error', operation: 'start', message: 'Unsupported PCM sample rate or channel count.' });
         return;
     }
 
@@ -62,9 +78,9 @@ function handleTunnelData(ws, data) {
         var available = wasapi.enumerate(message.kind);
         var found = false;
         for (var i = 0; i < available.length; i++) { if (available[i].id === message.deviceId) { found = true; break; } }
-        if (!found) { send(ws, { type: 'error', message: 'The selected audio device is unavailable.' }); return; }
+        if (!found) { send(ws, { type: 'error', operation: 'start', message: 'The selected audio device is unavailable.' }); return; }
 
-        session = { capture: wasapi.createCapture(message.kind, message.deviceId), timer: null, lastState: null, blocked: false };
+        session = { capture: wasapi.createCapture(message.kind, message.deviceId, sampleRate, channels), timer: null, lastState: null, blocked: false, sampleRate: sampleRate, channels: channels };
         ws._mcaudio = session;
         session.capture.start();
         session.timer = setInterval(function () {
@@ -76,13 +92,13 @@ function handleTunnelData(ws, data) {
                 send(ws, { type: 'state', state: state, message: (state === 'device-lost') ? 'Device disconnected; waiting for it to return.' : (state === 'reconnected' ? 'Audio device reconnected.' : state) });
             }
             if (state === 'error') {
-                send(ws, { type: 'error', message: 'WASAPI capture failed.' });
+                send(ws, { type: 'error', operation: 'capture', message: 'WASAPI capture failed.' });
                 stopCapture(ws);
                 return;
             }
             if (session.blocked) return;
             var frame;
-            try { frame = session.capture.read(480); } catch (e) { frame = null; }
+            try { frame = session.capture.read(session.sampleRate / 100); } catch (e) { frame = null; }
             if (frame == null || frame.length === 0) return;
             try {
                 if (ws.write(frame) === false) {
@@ -96,7 +112,7 @@ function handleTunnelData(ws, data) {
             stopCapture(ws);
             try { delete ws._mcaudio; } catch (ignore) { ws._mcaudio = null; }
         }
-        send(ws, { type: 'error', message: 'Could not start WASAPI capture: ' + errorText(e) });
+        send(ws, { type: 'error', operation: 'start', message: 'Could not start WASAPI capture: ' + errorText(e) });
     }
 }
 

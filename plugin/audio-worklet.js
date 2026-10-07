@@ -3,7 +3,9 @@
 class McAudioPcm extends AudioWorkletProcessor {
     constructor() {
         super();
-        this.capacity = 24000; // 500 ms at 48 kHz, per channel
+        this.sourceSampleRate = 48000;
+        this.channels = 2;
+        this.capacity = 24000; // 500 ms at the configured source rate
         this.targetBuffer = 1440; // 30 ms absorbs relay and scheduling jitter
         this.left = new Float32Array(this.capacity);
         this.right = new Float32Array(this.capacity);
@@ -11,10 +13,29 @@ class McAudioPcm extends AudioWorkletProcessor {
         this.writeIndex = 0;
         this.available = 0;
         this.phase = 0;
-        this.sourceStep = 48000 / sampleRate;
+        this.sourceStep = this.sourceSampleRate / sampleRate;
         this.buffering = true;
         this.port.onmessage = (event) => {
             const samples = event.data;
+            if (samples && samples.configure) {
+                const rate = samples.configure.sampleRate;
+                const channels = samples.configure.channels;
+                if ([8000, 16000, 24000, 32000, 44100, 48000].includes(rate) && (channels === 1 || channels === 2)) {
+                    this.sourceSampleRate = rate;
+                    this.channels = channels;
+                    this.sourceStep = this.sourceSampleRate / sampleRate;
+                    this.capacity = Math.max(1024, Math.ceil(this.sourceSampleRate * 0.5));
+                    this.targetBuffer = Math.max(64, Math.ceil(this.sourceSampleRate * 0.03));
+                    this.left = new Float32Array(this.capacity);
+                    this.right = new Float32Array(this.capacity);
+                    this.readIndex = 0;
+                    this.writeIndex = 0;
+                    this.available = 0;
+                    this.phase = 0;
+                    this.buffering = true;
+                }
+                return;
+            }
             if (samples && samples.reset) {
                 this.readIndex = this.writeIndex;
                 this.available = 0;
@@ -23,7 +44,8 @@ class McAudioPcm extends AudioWorkletProcessor {
                 return;
             }
             if (!samples || typeof samples.length !== "number") return;
-            for (let i = 0; i + 1 < samples.length; i += 2) {
+            const step = this.channels === 1 ? 1 : 2;
+            for (let i = 0; i + step - 1 < samples.length; i += step) {
                 // Keep the newest audio if the consumer stalls; old PCM only
                 // increases latency and cannot be recovered usefully.
                 if (this.available === this.capacity) {
@@ -31,7 +53,7 @@ class McAudioPcm extends AudioWorkletProcessor {
                     this.available--;
                 }
                 this.left[this.writeIndex] = samples[i];
-                this.right[this.writeIndex] = samples[i + 1];
+                this.right[this.writeIndex] = (this.channels === 1) ? samples[i] : samples[i + 1];
                 this.writeIndex = (this.writeIndex + 1) % this.capacity;
                 this.available++;
             }

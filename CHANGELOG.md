@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Add selectable PCM sample rates and mono/stereo output, with bitrate calculated from the actual 16-bit PCM format.
+- Give microphone and PC audio independent authenticated tunnels and playback queues so they can run together.
+- Keep each source's device and format selection independent.
+
 ## 0.1.1
 
 - Move controls to Speakers and Microphone buttons in MeshCentral PC Control/ViewMode.

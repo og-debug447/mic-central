@@ -2,11 +2,11 @@
 
 Native Windows microphone and system-output listening for MeshCentral. Microphones use Windows Core Audio capture; system audio uses WASAPI loopback. While viewing a Windows PC, the desktop toolbar has **Speakers** and **Microphone** buttons. Each opens a MeshCentral dialog with source and device selection plus Start/Stop controls. Playback stays in the desktop page, so the remote screen and audio can be used together.
 
-Audio is uncompressed signed 16-bit, 48 kHz, stereo PCM: 1.536 Mbps of payload before transport overhead. No audio codec or third-party audio library is used.
+Audio is uncompressed signed 16-bit PCM. In each source dialog, choose a sample rate from 8,000 to 48,000 Hz and mono or stereo. Microphone starts at 16 kHz mono (256 kbps); PC audio starts at 48 kHz stereo (1.536 Mbps). The displayed bitrate is calculated from the selected format (`sample rate × channels × 16 bits`); 8 kHz mono uses 128 kbps before transport overhead. Bitrate follows the format; it is not an independent compressed-quality setting. Speakers and microphone use separate authenticated agent tunnels and can play at the same time. No audio codec or third-party audio library is used.
 
 ## Status
 
-The MeshAgent Windows x64 Release and x86 Release solutions build with the native binding included. The native microphone path now asks the Windows audio engine to convert unsupported endpoint formats to 48 kHz stereo PCM, with the existing native-format conversion as a fallback, and schedules capture under MMCSS. The user reports that system-output loopback is now smooth and that microphone devices enumerate and capture starts, but microphone playback remains choppy. These changes aim to improve it; the new microphone path has not yet been physically verified. Tunnel recovery retains playback and retries after transient connection loss. See [architecture](docs/architecture.md) for the verification boundary.
+The MeshAgent Windows x64 Release and x86 Release solutions build with the native binding included. The native capture path produces the selected rate/channel format; microphone capture asks the Windows audio engine to convert formats when needed, with a native-format conversion fallback, and schedules capture under MMCSS. The user reports that system-output loopback is smooth, while microphone playback has been choppy. Lower sample rates and mono reduce PCM transport load, but their effect on this setup and simultaneous-source playback still need physical testing. Tunnel recovery retries after transient connection loss. See [architecture](docs/architecture.md) for the verification boundary.
 
 ## Apply to source checkouts
 

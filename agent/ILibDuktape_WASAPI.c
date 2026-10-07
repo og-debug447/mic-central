@@ -49,6 +49,8 @@ typedef struct WasapiCapture
     CRITICAL_SECTION lock;
     wchar_t *deviceId;
     int loopback;
+    int outputSampleRate;
+    int outputChannels;
     volatile LONG state;
     int started;
     int readFrame;
@@ -266,6 +268,11 @@ static int16_t Wasapi_ToPcm(float value)
 
 static void Wasapi_PushFrame(WasapiCapture *capture, int16_t left, int16_t right)
 {
+    if (capture->outputChannels == 1)
+    {
+        left = (int16_t)(((int32_t)left + (int32_t)right) / 2);
+        right = left;
+    }
     EnterCriticalSection(&capture->lock);
     if (capture->frameCount == WASAPI_RING_FRAMES)
     {
@@ -316,18 +323,18 @@ static HRESULT Wasapi_CaptureOnce(WasapiCapture *capture, BOOL reconnected)
 
     ZeroMemory(&desiredFormat, sizeof(desiredFormat));
     desiredFormat.wFormatTag = WAVE_FORMAT_PCM;
-    desiredFormat.nChannels = 2;
-    desiredFormat.nSamplesPerSec = 48000;
+    desiredFormat.nChannels = (WORD)capture->outputChannels;
+    desiredFormat.nSamplesPerSec = (DWORD)capture->outputSampleRate;
     desiredFormat.wBitsPerSample = 16;
-    desiredFormat.nBlockAlign = 4;
-    desiredFormat.nAvgBytesPerSec = 192000;
+    desiredFormat.nBlockAlign = (WORD)(capture->outputChannels * 2);
+    desiredFormat.nAvgBytesPerSec = (DWORD)(capture->outputSampleRate * capture->outputChannels * 2);
     hr = IAudioClient_IsFormatSupported(audioClient, AUDCLNT_SHAREMODE_SHARED, &desiredFormat, &closestFormat);
     if (hr == S_OK) format = &desiredFormat;
     else if (capture->loopback) format = mixFormat;
     else
     {
         /* Let the Windows audio engine perform mic format conversion when
-         * the endpoint's native mix format is not 48 kHz stereo PCM. */
+         * the endpoint does not support the selected PCM format directly. */
         format = &desiredFormat;
         flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     }
@@ -359,7 +366,7 @@ static HRESULT Wasapi_CaptureOnce(WasapiCapture *capture, BOOL reconnected)
     }
     if (SUCCEEDED(hr)) hr = IAudioClient_GetService(audioClient, &MCAUDIO_IID_IAudioCaptureClient, (void**)&captureClient);
     if (FAILED(hr)) goto cleanup;
-    sourceStep = (double)format->nSamplesPerSec / 48000.0;
+    sourceStep = (double)format->nSamplesPerSec / (double)capture->outputSampleRate;
     hr = IAudioClient_Start(audioClient);
     if (FAILED(hr)) goto cleanup;
     Wasapi_SetState(capture, reconnected ? WASAPI_STATE_RECONNECTED : WASAPI_STATE_RUNNING);
@@ -521,19 +528,21 @@ static duk_ret_t Wasapi_CaptureRead(duk_context *ctx)
     WasapiCapture *capture = Wasapi_GetThisCapture(ctx);
     int maxFrames = duk_get_int_default(ctx, 0, 480);
     int frames, i;
+    int bytesPerFrame;
     duk_size_t size;
     void *buffer;
     if (capture == NULL) return ILibDuktape_Error(ctx, "Audio capture is closed");
+    bytesPerFrame = capture->outputChannels * 2;
     if (maxFrames < 1) maxFrames = 1;
     if (maxFrames > WASAPI_MAX_READ_FRAMES) maxFrames = WASAPI_MAX_READ_FRAMES;
     EnterCriticalSection(&capture->lock);
     frames = capture->frameCount < maxFrames ? capture->frameCount : maxFrames;
-    size = (duk_size_t)(frames * 4);
+    size = (duk_size_t)(frames * bytesPerFrame);
     duk_push_buffer_raw(ctx, size, DUK_BUF_FLAG_DYNAMIC);
     buffer = duk_get_buffer_data(ctx, -1, NULL);
     for (i = 0; i < frames; ++i)
     {
-        memcpy((BYTE*)buffer + (i * 4), capture->ring[capture->readFrame], 4);
+        memcpy((BYTE*)buffer + (i * bytesPerFrame), capture->ring[capture->readFrame], (size_t)bytesPerFrame);
         capture->readFrame = (capture->readFrame + 1) % WASAPI_RING_FRAMES;
     }
     capture->frameCount -= frames;
@@ -565,15 +574,23 @@ static duk_ret_t Wasapi_CreateCapture(duk_context *ctx)
     const char *kind, *id;
     duk_size_t idLength;
     WasapiCapture *capture;
+    int sampleRate, channels;
     if (!duk_is_string(ctx, 0) || !duk_is_string(ctx, 1)) return ILibDuktape_Error(ctx, "wasapi.createCapture(kind, deviceId) requires strings");
+    if ((duk_get_top(ctx) > 2 && !duk_is_number(ctx, 2)) || (duk_get_top(ctx) > 3 && !duk_is_number(ctx, 3))) return ILibDuktape_Error(ctx, "Audio sample rate and channel count must be numbers");
+    sampleRate = duk_get_int_default(ctx, 2, 48000);
+    channels = duk_get_int_default(ctx, 3, 2);
+    if ((duk_get_top(ctx) > 2 && duk_get_number(ctx, 2) != (double)sampleRate) || (duk_get_top(ctx) > 3 && duk_get_number(ctx, 3) != (double)channels)) return ILibDuktape_Error(ctx, "Audio sample rate and channel count must be integers");
     kind = duk_get_string(ctx, 0);
     id = duk_get_lstring(ctx, 1, &idLength);
     if (strcmp(kind, "microphone") != 0 && strcmp(kind, "loopback") != 0) return ILibDuktape_Error(ctx, "Audio source kind must be microphone or loopback");
     if (idLength < 1 || idLength > 1024) return ILibDuktape_Error(ctx, "Audio device ID length is invalid");
+    if ((sampleRate != 8000 && sampleRate != 16000 && sampleRate != 24000 && sampleRate != 32000 && sampleRate != 44100 && sampleRate != 48000) || (channels != 1 && channels != 2)) return ILibDuktape_Error(ctx, "Unsupported PCM sample rate or channel count");
     capture = (WasapiCapture*)calloc(1, sizeof(WasapiCapture));
     if (capture == NULL) return ILibDuktape_Error(ctx, "Out of memory");
     capture->deviceId = Wasapi_Utf8ToWide(id, (int)idLength);
     capture->loopback = strcmp(kind, "loopback") == 0;
+    capture->outputSampleRate = sampleRate;
+    capture->outputChannels = channels;
     capture->stopEvent = CreateEventW(NULL, TRUE, TRUE, NULL);
     if (capture->deviceId == NULL || capture->stopEvent == NULL)
     {
@@ -600,7 +617,7 @@ static void Wasapi_Push(duk_context *ctx, void *chain)
     duk_push_object(ctx);
     duk_push_c_function(ctx, Wasapi_Enumerate, 1);
     duk_put_prop_string(ctx, -2, "enumerate");
-    duk_push_c_function(ctx, Wasapi_CreateCapture, 2);
+    duk_push_c_function(ctx, Wasapi_CreateCapture, 4);
     duk_put_prop_string(ctx, -2, "createCapture");
 }
 
