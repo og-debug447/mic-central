@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Keep the agent's PCM output at the selected sample rate when MeshAgent's JavaScript timer is coalesced to 16–32 ms ticks.
+- Read elapsed audio time per tick instead of repeatedly sending a fixed 10 ms slice, preventing microphone under-supply and browser underruns.
+
 ## 0.1.4
 
 - Add per-stage audio diagnostics for WASAPI read timing, relay chunk arrival, browser queue depth, and playback gaps.

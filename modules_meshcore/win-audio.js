@@ -85,6 +85,7 @@ function handleTunnelData(ws, data) {
             timer: null, lastState: null, blocked: false,
             sampleRate: sampleRate, channels: channels,
             lastPollTime: 0,
+            lastReadTime: 0,
             stats: newCaptureStats(Date.now())
         };
         ws._mcaudio = session;
@@ -115,14 +116,25 @@ function handleTunnelData(ws, data) {
                 if (session.stats.polls >= 200) sendCaptureStats(ws, session);
                 return;
             }
+            // MeshAgent's JavaScript timer is not guaranteed to fire every
+            // 10 ms (Windows timer coalescing can produce 16-32 ms ticks).
+            // Read the amount of PCM that elapsed since the previous read so
+            // the stream remains at the requested sample rate instead of
+            // silently sending only one fixed 10 ms slice per timer tick.
+            var readFrames = session.sampleRate / 100;
+            if (session.lastReadTime !== 0) {
+                readFrames = Math.ceil(session.sampleRate * Math.max(1, now - session.lastReadTime) / 1000);
+                if (readFrames > 4800) readFrames = 4800;
+            }
             var frame;
-            try { frame = session.capture.read(session.sampleRate / 100); } catch (e) { frame = null; }
+            try { frame = session.capture.read(readFrames); } catch (e) { frame = null; }
+            session.lastReadTime = now;
             if (frame == null || frame.length === 0) {
                 session.stats.emptyReads++;
                 if (session.stats.polls >= 200) sendCaptureStats(ws, session);
                 return;
             }
-            var expectedBytes = (session.sampleRate / 100) * session.channels * 2;
+            var expectedBytes = readFrames * session.channels * 2;
             if (frame.length < expectedBytes) session.stats.partialReads++;
             session.stats.frames += frame.length / (session.channels * 2);
             try {
