@@ -6,6 +6,11 @@ class McAudioPcm extends AudioWorkletProcessor {
         this.sourceSampleRate = 48000;
         this.channels = 2;
         this.targetBufferMs = 30;
+        this.playing = false;
+        this.hasStartedPlayback = false;
+        this.statsFrames = 0;
+        this.underruns = 0;
+        this.gapFrames = 0;
         this.capacity = 24000; // 500 ms at the configured source rate
         this.targetBuffer = 1440; // targetBufferMs absorbs relay and scheduling jitter
         this.left = new Float32Array(this.capacity);
@@ -22,10 +27,15 @@ class McAudioPcm extends AudioWorkletProcessor {
                 const rate = samples.configure.sampleRate;
                 const channels = samples.configure.channels;
                 const targetBufferMs = samples.configure.targetBufferMs;
-                if ([8000, 16000, 24000, 32000, 44100, 48000].includes(rate) && (channels === 1 || channels === 2) && Number.isInteger(targetBufferMs) && targetBufferMs >= 30 && targetBufferMs <= 150) {
+                if ([8000, 16000, 24000, 32000, 44100, 48000].includes(rate) && (channels === 1 || channels === 2) && Number.isInteger(targetBufferMs) && targetBufferMs >= 30 && targetBufferMs <= 150 && typeof samples.configure.playing === "boolean") {
                     this.sourceSampleRate = rate;
                     this.channels = channels;
                     this.targetBufferMs = targetBufferMs;
+                    this.playing = samples.configure.playing;
+                    this.hasStartedPlayback = false;
+                    this.statsFrames = 0;
+                    this.underruns = 0;
+                    this.gapFrames = 0;
                     this.sourceStep = this.sourceSampleRate / sampleRate;
                     this.capacity = Math.max(1024, Math.ceil(this.sourceSampleRate * 0.5));
                     this.targetBuffer = Math.max(64, Math.ceil(this.sourceSampleRate * this.targetBufferMs / 1000));
@@ -40,6 +50,8 @@ class McAudioPcm extends AudioWorkletProcessor {
                 return;
             }
             if (samples && samples.reset) {
+                this.playing = false;
+                this.hasStartedPlayback = false;
                 this.readIndex = this.writeIndex;
                 this.available = 0;
                 this.phase = 0;
@@ -67,17 +79,35 @@ class McAudioPcm extends AudioWorkletProcessor {
         const output = outputs[0];
         const left = output[0];
         const right = output[1] || output[0];
+        if (this.playing) {
+            this.statsFrames += left.length;
+            if (this.statsFrames >= sampleRate * 2) {
+                this.statsFrames -= sampleRate * 2;
+                this.port.postMessage({ audioStats: {
+                    underruns: this.underruns,
+                    gapMs: Math.round(this.gapFrames * 1000 / sampleRate),
+                    queuedMs: Math.round(this.available * 1000 / this.sourceSampleRate),
+                    targetBufferMs: this.targetBufferMs
+                } });
+                this.underruns = 0;
+                this.gapFrames = 0;
+            }
+        }
         if (this.buffering) {
             if (this.available < this.targetBuffer) {
+                if (this.playing && this.hasStartedPlayback) this.gapFrames += left.length;
                 left.fill(0);
                 if (right !== left) right.fill(0);
                 return true;
             }
             this.buffering = false;
+            this.hasStartedPlayback = true;
         }
 
         for (let i = 0; i < left.length; i++) {
             if (this.available < 2) {
+                this.underruns++;
+                if (this.playing && this.hasStartedPlayback) this.gapFrames += left.length - i;
                 left.fill(0, i);
                 if (right !== left) right.fill(0, i);
                 this.buffering = true;

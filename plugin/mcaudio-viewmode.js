@@ -28,6 +28,11 @@
             worklet: null,
             workletPromise: null,
             gainNode: null,
+            captureStats: null,
+            transportStats: null,
+            transportWindow: null,
+            lastPacketTime: 0,
+            playbackStats: null,
             status: 'Not connected'
         };
     }
@@ -67,7 +72,8 @@
             source.worklet.port.postMessage({ configure: {
                 sampleRate: source.sampleRate,
                 channels: source.channels,
-                targetBufferMs: source.kind === 'microphone' ? 100 : 30
+                targetBufferMs: source.kind === 'microphone' ? 100 : 30,
+                playing: source.wantAudio || source.startingCapture
             } });
         } catch (e) { }
     }
@@ -144,6 +150,74 @@
         if (source.kind !== dialogSource) return;
         var bitrate = element('mcaudioBitrate');
         if (bitrate) bitrate.textContent = formatBitrate(source.sampleRate, source.channels) + ' (16-bit PCM payload)';
+    }
+
+    function updateDiagnostics(source) {
+        if (source.kind !== dialogSource) return;
+        var diagnostics = element('mcaudioDiagnostics');
+        if (!diagnostics) return;
+        var parts = [];
+        if (source.captureStats) {
+            var capture = source.captureStats;
+            var seconds = Math.max(0.001, capture.elapsedMs / 1000);
+            var frameRate = Math.round(capture.capturedFrames / seconds);
+            parts.push('Agent capture (last ' + (capture.elapsedMs / 1000).toFixed(1) + ' s): ' + capture.emptyReads + ' empty reads, ' + capture.partialReads + ' short reads, ' + capture.blockedPolls + ' backpressured checks, ' + capture.latePolls + ' timer delays over 20 ms; ' + frameRate.toLocaleString() + ' of ' + capture.sampleRate.toLocaleString() + ' frames/s, longest timer interval ' + capture.maxIntervalMs + ' ms.');
+        } else {
+            parts.push('Agent capture timing: collecting…');
+        }
+        if (source.transportStats) {
+            var transport = source.transportStats;
+            var duration = Math.max(0.001, transport.elapsedMs / 1000);
+            var kbps = Math.round(transport.bytes * 8 / duration / 1000);
+            parts.push('Tunnel (last ' + (transport.elapsedMs / 1000).toFixed(1) + ' s): ' + transport.chunks + ' PCM chunks, ' + transport.lateChunks + ' arrival gaps over 30 ms, longest gap ' + transport.maxGapMs + ' ms, ' + kbps + ' kbps received.');
+        } else {
+            parts.push('Tunnel timing: collecting…');
+        }
+        if (source.playbackStats) {
+            parts.push('Browser playback (last 2 s): ' + source.playbackStats.underruns + ' buffer underruns, ' + source.playbackStats.gapMs + ' ms of silence while refilling; queued ' + source.playbackStats.queuedMs + ' ms (target ' + source.playbackStats.targetBufferMs + ' ms).');
+        } else {
+            parts.push('Browser playback timing: collecting…');
+        }
+        diagnostics.textContent = parts.join(' ');
+    }
+
+    function beginTransportStats(source) {
+        source.transportStats = null;
+        source.transportWindow = { startTime: Date.now(), chunks: 0, bytes: 0, lateChunks: 0, maxGapMs: 0 };
+        source.lastPacketTime = 0;
+    }
+
+    function recordTransportPacket(source, byteLength) {
+        var now = Date.now();
+        var stats = source.transportWindow;
+        if (!stats) {
+            beginTransportStats(source);
+            stats = source.transportWindow;
+        }
+        if (source.lastPacketTime !== 0) {
+            var gap = now - source.lastPacketTime;
+            if (gap > 30) stats.lateChunks++;
+            if (gap > stats.maxGapMs) stats.maxGapMs = gap;
+        }
+        source.lastPacketTime = now;
+        stats.chunks++;
+        stats.bytes += byteLength;
+    }
+
+    function finishTransportStats(source) {
+        var now = Date.now();
+        var stats = source.transportWindow;
+        if (!stats) beginTransportStats(source);
+        stats = source.transportWindow;
+        source.transportStats = {
+            elapsedMs: now - stats.startTime,
+            chunks: stats.chunks,
+            bytes: stats.bytes,
+            lateChunks: stats.lateChunks,
+            maxGapMs: stats.maxGapMs
+        };
+        source.transportWindow = { startTime: now, chunks: 0, bytes: 0, lateChunks: 0, maxGapMs: 0 };
+        source.lastPacketTime = 0;
     }
 
     function updateControls() {
@@ -239,6 +313,13 @@
             source.gainNode = context.createGain();
             node.connect(source.gainNode);
             source.gainNode.connect(context.destination);
+            node.port.onmessage = function (event) {
+                if (source.worklet !== node || !event.data) return;
+                if (event.data.audioStats) {
+                    source.playbackStats = event.data.audioStats;
+                    updateDiagnostics(source);
+                }
+            };
             configureWorklet(source);
             updateMixGain();
             return node;
@@ -261,6 +342,9 @@
         if (source.startingCapture) return;
         var activeSession = source.session;
         var attempt = ++source.captureAttempt;
+        source.captureStats = null;
+        source.playbackStats = null;
+        beginTransportStats(source);
         source.startingCapture = true;
         updateMixGain();
         updateControls();
@@ -282,6 +366,7 @@
             }
             source.activeSampleRate = source.sampleRate;
             source.activeChannels = source.channels;
+            beginTransportStats(source);
             source.startingCapture = false;
             source.wantAudio = true;
             updateMixGain();
@@ -324,6 +409,10 @@
                 else setStatus(source, source.devices.length ? 'Choose a device, then start listening.' : 'No active audio devices found.');
             }
             updateControls();
+        } else if (message.type === 'captureStats') {
+            source.captureStats = message;
+            finishTransportStats(source);
+            updateDiagnostics(source);
         } else if (message.type === 'state') {
             if (message.state === 'running') setStatus(source, 'Audio is playing. ' + formatDescription(source));
             else if (message.state === 'device-lost') setStatus(source, 'The device disconnected; waiting for it to return.');
@@ -364,6 +453,7 @@
             ProcessData: function (data) { onMessage(source, activeSession, data); },
             ProcessBinaryData: function (bytes) {
                 if (source.session !== activeSession || activeSession.closing || !source.wantAudio || !source.worklet || !bytes || bytes.byteLength < 2) return;
+                recordTransportPacket(source, bytes.byteLength);
                 var bytesPerFrame = source.activeChannels * 2;
                 var byteLength = bytes.byteLength - (bytes.byteLength % bytesPerFrame);
                 if (byteLength < bytesPerFrame) return;
@@ -499,6 +589,7 @@
             '<p class="mb-2">Speakers and microphone can run together. Settings apply to the selected source.</p>' +
             '<div class="d-flex gap-2 mb-2"><button id="mcaudioStart" type="button" class="btn btn-primary" disabled>Start listening</button>' +
             '<button id="mcaudioStop" type="button" class="btn btn-secondary" disabled>Stop</button></div>' +
+            '<details class="small mb-2"><summary>Audio diagnostics</summary><p id="mcaudioDiagnostics" class="text-secondary mt-1 mb-0"></p></details>' +
             '<p id="mcaudioStatus" class="mb-0" role="status"></p>';
         if (!showAudioDialog(title, body)) return false;
 
@@ -513,6 +604,7 @@
         rateSelect.value = String(source.sampleRate);
         channelSelect.value = String(source.channels);
         updateBitrate(source);
+        updateDiagnostics(source);
         sourceSelect.addEventListener('change', function () { onSourceChanged(sourceSelect.value); });
         deviceSelect.addEventListener('change', function () {
             var current = activeSource();

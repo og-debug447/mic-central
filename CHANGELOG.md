@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Add per-stage audio diagnostics for WASAPI read timing, relay chunk arrival, browser queue depth, and playback gaps.
+- Report actual captured PCM frame rate so capture stalls can be distinguished from relay and browser playback gaps.
+
 ## 0.1.3
 
 - Increase the microphone's default browser jitter buffer to 100 ms to reduce gaps caused by relay timing variation.

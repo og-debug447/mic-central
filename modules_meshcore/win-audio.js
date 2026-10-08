@@ -80,11 +80,25 @@ function handleTunnelData(ws, data) {
         for (var i = 0; i < available.length; i++) { if (available[i].id === message.deviceId) { found = true; break; } }
         if (!found) { send(ws, { type: 'error', operation: 'start', message: 'The selected audio device is unavailable.' }); return; }
 
-        session = { capture: wasapi.createCapture(message.kind, message.deviceId, sampleRate, channels), timer: null, lastState: null, blocked: false, sampleRate: sampleRate, channels: channels };
+        session = {
+            capture: wasapi.createCapture(message.kind, message.deviceId, sampleRate, channels),
+            timer: null, lastState: null, blocked: false,
+            sampleRate: sampleRate, channels: channels,
+            lastPollTime: 0,
+            stats: newCaptureStats(Date.now())
+        };
         ws._mcaudio = session;
         session.capture.start();
         session.timer = setInterval(function () {
             if (ws._mcaudio !== session) return;
+            var now = Date.now();
+            session.stats.polls++;
+            if (session.lastPollTime !== 0) {
+                var intervalMs = now - session.lastPollTime;
+                if (intervalMs > session.stats.maxIntervalMs) session.stats.maxIntervalMs = intervalMs;
+                if (intervalMs > 20) session.stats.latePolls++;
+            }
+            session.lastPollTime = now;
             var state;
             try { state = session.capture.getState(); } catch (e) { state = 'error'; }
             if (state !== session.lastState) {
@@ -96,16 +110,28 @@ function handleTunnelData(ws, data) {
                 stopCapture(ws);
                 return;
             }
-            if (session.blocked) return;
+            if (session.blocked) {
+                session.stats.blockedPolls++;
+                if (session.stats.polls >= 200) sendCaptureStats(ws, session);
+                return;
+            }
             var frame;
             try { frame = session.capture.read(session.sampleRate / 100); } catch (e) { frame = null; }
-            if (frame == null || frame.length === 0) return;
+            if (frame == null || frame.length === 0) {
+                session.stats.emptyReads++;
+                if (session.stats.polls >= 200) sendCaptureStats(ws, session);
+                return;
+            }
+            var expectedBytes = (session.sampleRate / 100) * session.channels * 2;
+            if (frame.length < expectedBytes) session.stats.partialReads++;
+            session.stats.frames += frame.length / (session.channels * 2);
             try {
                 if (ws.write(frame) === false) {
                     session.blocked = true;
                     ws.once('drain', function () { if (ws._mcaudio === session) session.blocked = false; });
                 }
             } catch (e) { session.blocked = true; }
+            if (session.stats.polls >= 200) sendCaptureStats(ws, session);
         }, 10);
     } catch (e) {
         if (session != null && ws._mcaudio === session) {
@@ -114,6 +140,27 @@ function handleTunnelData(ws, data) {
         }
         send(ws, { type: 'error', operation: 'start', message: 'Could not start WASAPI capture: ' + errorText(e) });
     }
+}
+
+function sendCaptureStats(ws, session) {
+    var stats = session.stats;
+    send(ws, {
+        type: 'captureStats',
+        sampleRate: session.sampleRate,
+        polls: stats.polls,
+        elapsedMs: Date.now() - stats.windowStart,
+        emptyReads: stats.emptyReads,
+        partialReads: stats.partialReads,
+        blockedPolls: stats.blockedPolls,
+        latePolls: stats.latePolls,
+        maxIntervalMs: stats.maxIntervalMs,
+        capturedFrames: Math.round(stats.frames)
+    });
+    session.stats = newCaptureStats(Date.now());
+}
+
+function newCaptureStats(now) {
+    return { windowStart: now, polls: 0, emptyReads: 0, partialReads: 0, blockedPolls: 0, latePolls: 0, maxIntervalMs: 0, frames: 0 };
 }
 
 module.exports = { handleTunnelData: handleTunnelData, closeTunnel: closeTunnel };
