@@ -5,8 +5,9 @@ class McAudioPcm extends AudioWorkletProcessor {
         super();
         this.sourceSampleRate = 48000;
         this.channels = 2;
+        this.targetBufferMs = 30;
         this.capacity = 24000; // 500 ms at the configured source rate
-        this.targetBuffer = 1440; // 30 ms absorbs relay and scheduling jitter
+        this.targetBuffer = 1440; // targetBufferMs absorbs relay and scheduling jitter
         this.left = new Float32Array(this.capacity);
         this.right = new Float32Array(this.capacity);
         this.readIndex = 0;
@@ -20,12 +21,14 @@ class McAudioPcm extends AudioWorkletProcessor {
             if (samples && samples.configure) {
                 const rate = samples.configure.sampleRate;
                 const channels = samples.configure.channels;
-                if ([8000, 16000, 24000, 32000, 44100, 48000].includes(rate) && (channels === 1 || channels === 2)) {
+                const targetBufferMs = samples.configure.targetBufferMs;
+                if ([8000, 16000, 24000, 32000, 44100, 48000].includes(rate) && (channels === 1 || channels === 2) && Number.isInteger(targetBufferMs) && targetBufferMs >= 30 && targetBufferMs <= 150) {
                     this.sourceSampleRate = rate;
                     this.channels = channels;
+                    this.targetBufferMs = targetBufferMs;
                     this.sourceStep = this.sourceSampleRate / sampleRate;
                     this.capacity = Math.max(1024, Math.ceil(this.sourceSampleRate * 0.5));
-                    this.targetBuffer = Math.max(64, Math.ceil(this.sourceSampleRate * 0.03));
+                    this.targetBuffer = Math.max(64, Math.ceil(this.sourceSampleRate * this.targetBufferMs / 1000));
                     this.left = new Float32Array(this.capacity);
                     this.right = new Float32Array(this.capacity);
                     this.readIndex = 0;

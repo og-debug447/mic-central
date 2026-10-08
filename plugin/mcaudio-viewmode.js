@@ -64,7 +64,11 @@
     function configureWorklet(source) {
         if (!source.worklet) return;
         try {
-            source.worklet.port.postMessage({ configure: { sampleRate: source.sampleRate, channels: source.channels } });
+            source.worklet.port.postMessage({ configure: {
+                sampleRate: source.sampleRate,
+                channels: source.channels,
+                targetBufferMs: source.kind === 'microphone' ? 100 : 30
+            } });
         } catch (e) { }
     }
 
@@ -491,7 +495,7 @@
             '<div class="col"><label for="mcaudioChannels" class="form-label">Channels</label>' +
             '<select id="mcaudioChannels" class="form-select"><option value="1">Mono</option><option value="2">Stereo</option></select></div></div>' +
             '<p class="mb-2">PCM bitrate: <strong id="mcaudioBitrate"></strong></p>' +
-            '<p class="mb-2">Microphone starts at 16,000 Hz mono; PC audio starts at 48,000 Hz stereo. You can change either format.</p>' +
+            '<p class="mb-2">Microphone starts at 16,000 Hz mono with a 100 ms playback buffer; PC audio starts at 48,000 Hz stereo.</p>' +
             '<p class="mb-2">Speakers and microphone can run together. Settings apply to the selected source.</p>' +
             '<div class="d-flex gap-2 mb-2"><button id="mcaudioStart" type="button" class="btn btn-primary" disabled>Start listening</button>' +
             '<button id="mcaudioStop" type="button" class="btn btn-secondary" disabled>Stop</button></div>' +
