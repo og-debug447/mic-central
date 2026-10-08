@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Publish the elapsed-time PCM capture fix as a new plugin version so MeshCentral can offer it as an update.
+
 ## 0.1.5
 
 - Keep the agent's PCM output at the selected sample rate when MeshAgent's JavaScript timer is coalesced to 16–32 ms ticks.
